@@ -126,8 +126,10 @@ if (isset($_GET['action'])) {
         #treemapContainer { height: 300px; display: none; margin-bottom: 1rem; }
     </style>
 </head>
-<body class="bg-slate-50 p-4 h-screen flex flex-col">
 
+<!-- <body class="bg-slate-50 p-4 h-screen flex flex-col"> -->
+    
+<body class="bg-slate-50 p-4 min-h-screen">
     <div class="bg-white p-4 rounded-2xl shadow-sm border mb-4 flex flex-wrap justify-between items-center gap-4">
         <div class="flex items-center gap-4">
             <h1 class="text-xl font-black italic">AUDITOR<span class="text-blue-600">PRO v8.5</span></h1>
