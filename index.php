@@ -1,5 +1,5 @@
 <?php
-// 1. GLOBAL CONFIG & ERROR SUPPRESSION
+// 1. GLOBAL CONFIG & ERROR SUPPRESSION a
 ini_set('memory_limit', '1024M');
 error_reporting(0); // Stop warnings from breaking JSON output
 
