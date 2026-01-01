@@ -1,7 +1,7 @@
 <?php
-// 1. GLOBAL CONFIG
+// 1. GLOBAL CONFIG & SYSTEM BYPASS
 set_time_limit(0); 
-ini_set('memory_limit', '1024M');
+ini_set('memory_limit', '2048M');
 error_reporting(0); 
 
 // 2. PROTECTED FUNCTIONS
@@ -15,6 +15,9 @@ if (!function_exists('getHDName')) {
 
 if (!function_exists('getFolderStats')) {
     function getFolderStats($dir, $recursive = true) {
+        // Server-side check for runaway/aborted connection
+        if (connection_aborted()) exit; 
+        
         $size = 0; $files = 0; $folders = 0;
         if (!is_dir($dir) || is_link($dir) || !is_readable($dir)) return ['s'=>0, 'f'=>0, 'd'=>0];
         $items = @scandir($dir);
@@ -78,7 +81,7 @@ if (isset($_GET['action'])) {
             $dir = new RecursiveDirectoryIterator($path, RecursiveDirectoryIterator::SKIP_DOTS | RecursiveDirectoryIterator::UNIX_PATHS);
             $filter = new RecursiveCallbackFilterIterator($dir, function ($current) {
                 $fn = $current->getFilename();
-                $blocked = ['Library', 'System', 'Volumes', 'dev', 'proc', '.Trash'];
+                $blocked = ['Library', 'System', 'Volumes', 'dev', 'proc', '.Trash', 'node_modules'];
                 return $fn[0] !== '.' && !in_array($fn, $blocked); 
             });
             $it = new RecursiveIteratorIterator($filter, RecursiveIteratorIterator::SELF_FIRST);
@@ -87,22 +90,18 @@ if (isset($_GET['action'])) {
                 if ($fileinfo->isDir() && !$fileinfo->isLink() && is_readable($fileinfo->getPathname())) {
                     $targets[] = $fileinfo->getPathname();
                 }
-                if (count($targets) > 2000) break; 
+                if (count($targets) > 3000) break; 
             }
         } catch (Exception $e) {}
 
         $results = [];
         foreach ($targets as $t) {
+            if (connection_aborted()) exit;
             $deep = getFolderStats($t, true);
             $local = getFolderStats($t, false);
-            
-            // Generate breadcrumbs with trailing slash termination
             $parts = array_values(array_filter(explode('/', $t)));
-            $levels = [];
-            $levels[0] = "/"; 
-            foreach ($parts as $idx => $p) {
-                $levels[$idx + 1] = $p . "/";
-            }
+            $levels = [0 => "/"];
+            foreach ($parts as $idx => $p) { $levels[$idx + 1] = $p . "/"; }
 
             $results[] = [
                 'hd' => getHDName($t), 'path' => $t, 'path_level' => count($levels) - 1, 'name' => basename($t),
@@ -117,7 +116,7 @@ if (isset($_GET['action'])) {
 <!DOCTYPE html>
 <html>
 <head>
-    <title>Auditor Pro v8.5</title>
+    <title>Auditor Pro v8.6</title>
     <script src="https://cdn.tailwindcss.com"></script>
     <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
     <style>
@@ -127,24 +126,38 @@ if (isset($_GET['action'])) {
         td { font-size: 10px; border: 1px solid #f1f5f9; padding: 4px; white-space: nowrap; }
         .lvl-cell { color: #64748b; font-family: monospace; font-size: 9px; border-left: 1px solid #e2e8f0; cursor: pointer; }
         .lvl-cell:hover { background: #eff6ff; color: #2563eb; }
-        .btn-tool { padding: 6px 12px; border-radius: 6px; font-weight: 900; font-size: 10px; text-transform: uppercase; border: 1px solid transparent; cursor: pointer; }
+        .btn-tool { padding: 6px 12px; border-radius: 6px; font-weight: 900; font-size: 10px; text-transform: uppercase; border: 1px solid transparent; cursor: pointer; transition: all 0.1s; }
+        .btn-tool:active { transform: scale(0.95); }
         .branch { margin-left: 15px; border-left: 1px dashed #cbd5e1; }
         #treemapContainer { display: none; margin-bottom: 2rem; background: white; border-radius: 1rem; padding: 20px; border: 1px solid #e2e8f0; box-shadow: 0 10px 15px -3px rgba(0,0,0,0.1); }
+        input[type="range"] { height: 6px; appearance: none; background: #cbd5e1; border-radius: 5px; }
     </style>
 </head>
 <body> 
 
     <div class="bg-white p-4 rounded-2xl shadow-sm border mb-4 flex flex-wrap justify-between items-center gap-4">
         <div class="flex items-center gap-4">
-            <h1 class="text-xl font-black italic tracking-tighter">AUDITOR<span class="text-blue-600">PRO v8.5</span></h1>
-            <input type="text" id="matrixFilter" placeholder="Filter entire path..." onkeyup="applyFilter()" class="bg-slate-100 border px-3 py-1.5 rounded-lg text-xs font-bold w-64 outline-none focus:ring-2 focus:ring-blue-500 transition-all">
+            <h1 class="text-xl font-black italic tracking-tighter">AUDITOR<span class="text-blue-600">PRO v8.6</span></h1>
+            <input type="text" id="matrixFilter" placeholder="Filter path..." onkeyup="applyFilter()" class="bg-slate-100 border px-3 py-1.5 rounded-lg text-xs font-bold w-48 outline-none focus:ring-2 focus:ring-blue-500">
+            
+            <div class="flex flex-col gap-1">
+                <span class="text-[8px] font-black text-slate-400 uppercase leading-none">Scan Depth: <span id="depthVal" class="text-blue-600">3</span></span>
+                <input type="range" id="depthInput" min="1" max="10" value="3" oninput="document.getElementById('depthVal').innerText=this.value">
+            </div>
+
+            <div class="flex flex-col gap-1">
+                <span class="text-[8px] font-black text-slate-400 uppercase leading-none">Timeout: <span id="timeVal" class="text-blue-600">30</span>s</span>
+                <input type="range" id="timeoutInput" min="5" max="300" step="5" value="30" oninput="document.getElementById('timeVal').innerText=this.value">
+            </div>
         </div>
+
         <div class="flex gap-2">
             <div id="statusBox" class="px-3 py-1.5 bg-slate-200 rounded-full text-[10px] font-black uppercase text-slate-500">Idle</div>
             <button onclick="toggleView()" id="viewBtn" class="btn-tool bg-purple-600 text-white shadow-md">Analytics</button>
-            <button onclick="runAnalysis()" class="btn-tool bg-blue-600 text-white shadow-md">Start Scan</button>
+            <button id="startBtn" onclick="runAnalysis()" class="btn-tool bg-blue-600 text-white shadow-md">Start Scan</button>
+            <button id="stopBtn" onclick="stopAnalysis()" class="btn-tool bg-red-500 text-white shadow-md hidden">Stop</button>
             <button onclick="copyForExcel()" class="btn-tool bg-emerald-600 text-white shadow-md">Copy for Sheets</button>
-            <button onclick="exportCSV()" class="btn-tool bg-slate-800 text-white">Export CSV</button>
+            <button onclick="exportCSV()" class="btn-tool bg-slate-800 text-white">CSV</button>
         </div>
     </div>
 
@@ -166,7 +179,6 @@ if (isset($_GET['action'])) {
         <div class="col-span-12 lg:col-span-3 bg-white rounded-2xl border p-4 shadow-sm h-fit">
             <div id="treeRoot" class="max-h-[600px] overflow-y-auto"></div>
         </div>
-
         <div class="col-span-12 lg:col-span-9 bg-white rounded-2xl border shadow-sm overflow-hidden">
             <div class="overflow-x-auto max-h-[800px] overflow-y-auto">
                 <table class="w-full border-collapse" id="mainTable">
@@ -185,6 +197,7 @@ if (isset($_GET['action'])) {
         let fullDataCache = [];
         let chartInstance = null, barChartInstance = null;
         let isChartView = false, chartHistory = [];
+        let abortController = null;
 
         async function loadDrives() {
             const root = document.getElementById('treeRoot');
@@ -220,15 +233,52 @@ if (isset($_GET['action'])) {
         async function runAnalysis() {
             const checks = Array.from(document.querySelectorAll('.audit-check:checked'));
             if (!checks.length) return alert("Select folder!");
+            
+            // Toggle Buttons
+            document.getElementById('startBtn').classList.add('hidden');
+            document.getElementById('stopBtn').classList.remove('hidden');
             document.getElementById('statusBox').innerText = "Scanning...";
+            
+            abortController = new AbortController();
+            const timeoutVal = parseInt(document.getElementById('timeoutInput').value) * 1000;
+            const signal = abortController.signal;
+
+            // Timeout Logic
+            const timeoutId = setTimeout(() => { if(abortController) abortController.abort(); }, timeoutVal);
+
             fullDataCache = [];
-            for (const cb of checks) {
-                const res = await fetch(`?action=scan&path=${encodeURIComponent(cb.dataset.path)}&depthLimit=3`);
-                const json = await res.json();
-                if(json.data) fullDataCache = [...fullDataCache, ...json.data];
+            try {
+                for (const cb of checks) {
+                    const depth = document.getElementById('depthInput').value;
+                    const res = await fetch(`?action=scan&path=${encodeURIComponent(cb.dataset.path)}&depthLimit=${depth}`, { signal });
+                    const json = await res.json();
+                    if(json.data) fullDataCache = [...fullDataCache, ...json.data];
+                }
+                applyFilter();
+                document.getElementById('statusBox').innerText = "Done";
+            } catch (err) {
+                if (err.name === 'AbortError') {
+                    document.getElementById('statusBox').innerText = "Stopped/Timeout";
+                } else {
+                    document.getElementById('statusBox').innerText = "Error";
+                }
+            } finally {
+                clearTimeout(timeoutId);
+                resetButtons();
             }
-            applyFilter();
-            document.getElementById('statusBox').innerText = "Done";
+        }
+
+        function stopAnalysis() {
+            if (abortController) {
+                abortController.abort();
+                resetButtons();
+            }
+        }
+
+        function resetButtons() {
+            document.getElementById('startBtn').classList.remove('hidden');
+            document.getElementById('stopBtn').classList.add('hidden');
+            abortController = null;
         }
 
         function renderTable(data) {
@@ -237,14 +287,11 @@ if (isset($_GET['action'])) {
             body.innerHTML = '';
             if(!data.length) return;
 
-            // Handle Dynamic Level Columns
             let maxLvlIndex = 0;
             data.forEach(r => { Object.keys(r.levels).forEach(k => { if(parseInt(k) > maxLvlIndex) maxLvlIndex = parseInt(k); })});
             while(head.cells.length > 11) head.deleteCell(11);
             for(let i=0; i <= maxLvlIndex; i++) { 
-                let th = document.createElement('th'); 
-                th.innerText = `Lv${i}`; 
-                head.appendChild(th); 
+                let th = document.createElement('th'); th.innerText = `Lv${i}`; head.appendChild(th); 
             }
 
             data.forEach((r, idx) => {
@@ -252,12 +299,11 @@ if (isset($_GET['action'])) {
                     <td>${idx + 1}</td><td>${r.hd}</td>
                     <td class="font-bold text-blue-600 cursor-pointer" onclick="updateChart('${r.path}')">${r.name}</td>
                     <td class="text-center font-bold text-slate-400">${r.path_level}</td>
-                    <td class="text-[9px] text-slate-400 truncate max-w-[150px]">${r.path}</td>
+                    <td class="text-[9px] text-slate-400 truncate max-w-[150px]" onclick="navigator.clipboard.writeText('${r.path}')">${r.path}</td>
                     <td class="text-right font-black text-blue-700 bg-blue-50/30">${(r.total_size / 1073741824).toFixed(3)}</td>
                     <td class="text-right">${r.total_files}</td><td class="text-right">${r.total_subs}</td>
                     <td class="text-right text-emerald-700 bg-emerald-50/30 font-bold">${formatSize(r.here_size)}</td>
                     <td class="text-right">${r.here_files}</td><td class="text-right">${r.here_folders}</td>`;
-                
                 for(let i=0; i <= maxLvlIndex; i++) {
                     row += `<td class="lvl-cell" onclick="updateChart('${r.path}')">${r.levels[i] || ''}</td>`;
                 }
@@ -273,13 +319,12 @@ if (isset($_GET['action'])) {
             if (!parentRow) return;
 
             const children = activeData.filter(r => parseInt(r.path_level) === (parseInt(parentRow.path_level) + 1) && r.path.startsWith(parentRow.path));
-            
             let labels = children.map(r => r.name);
             let values = children.map(r => (r.total_size / 1073741824).toFixed(3));
             const looseGB = (parentRow.here_size / 1073741824).toFixed(3);
             if (parseFloat(looseGB) > 0) { labels.push("📁 (Loose Files)"); values.push(looseGB); }
 
-            if (!values.length) { alert("This folder has no scanned sub-folders."); return; }
+            if (!values.length) { alert("No sub-content."); return; }
 
             if (chartInstance) chartInstance.destroy();
             if (barChartInstance) barChartInstance.destroy();
@@ -289,7 +334,7 @@ if (isset($_GET['action'])) {
 
             chartInstance = new Chart(document.getElementById('pieChartCanvas'), {
                 type: 'pie',
-                data: { labels: labels, datasets: [{ data: values, backgroundColor: colors }] },
+                data: { labels, datasets: [{ data: values, backgroundColor: colors, borderWidth: 0 }] },
                 options: { maintainAspectRatio: false, onClick: (e, el) => {
                     if (el.length > 0 && el[0].index < children.length) {
                         chartHistory.push(parentRow.path);
@@ -300,7 +345,7 @@ if (isset($_GET['action'])) {
 
             barChartInstance = new Chart(document.getElementById('stackedBarCanvas'), {
                 type: 'bar',
-                data: { labels: ['Composition'], datasets: labels.map((l, i) => ({ label: l, data: [values[i]], backgroundColor: colors[i % colors.length], barThickness: 60 })) },
+                data: { labels: ['Composition'], datasets: labels.map((l, i) => ({ label: l, data: [values[i]], backgroundColor: colors[i % colors.length], barThickness: 50 })) },
                 options: { indexAxis: 'x', maintainAspectRatio: false, scales: { x: { stacked: true, display: false }, y: { stacked: true } }, plugins: { legend: { display: false } } }
             });
         }
@@ -313,12 +358,12 @@ if (isset($_GET['action'])) {
         function copyForExcel() {
             let tsv = "HD\tFolder\tLevel\tPath\tTotalGB\tTotalFiles\tSizeHere\n";
             fullDataCache.forEach(r => tsv += `${r.hd}\t${r.name}\t${r.path_level}\t${r.path}\t${(r.total_size/1073741824).toFixed(3)}\t${r.total_files}\t${r.here_size}\n`);
-            navigator.clipboard.writeText(tsv).then(() => alert("Copied! Just Paste into Excel or Sheets."));
+            navigator.clipboard.writeText(tsv).then(() => alert("Copied for Excel."));
         }
 
         function exportCSV() {
-            let csv = "HD,Name,Level,Path,TotalGB\n";
-            fullDataCache.forEach(r => csv += `"${r.hd}","${r.name}",${r.path_level},"${r.path}",${(r.total_size/1073741824).toFixed(3)}\n`);
+            let csv = "HD,Name,Level,Path,TotalGB,SizeHere\n";
+            fullDataCache.forEach(r => csv += `"${r.hd}","${r.name}",${r.path_level},"${r.path}",${(r.total_size/1073741824).toFixed(3)},${r.here_size}\n`);
             const a = document.createElement('a'); a.href = window.URL.createObjectURL(new Blob([csv], {type:'text/csv'})); a.download = `audit.csv`; a.click();
         }
 
