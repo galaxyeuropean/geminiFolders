@@ -156,9 +156,25 @@ if (isset($_GET['action'])) {
         </div>
     </div>
 
-    <div id="treemapContainer">
-        <canvas id="pieChartCanvas"></canvas>
+    <div id="treemapContainer" class="bg-white rounded-2xl border p-4 shadow-sm mb-8" style="display: none;">
+    <div class="flex justify-between items-center mb-2">
+        <div id="breadcrumb" class="text-[10px] font-bold text-slate-500 uppercase"></div>
+        <div class="flex gap-2">
+            <button onclick="goBackChart()" class="btn-tool bg-slate-100 text-slate-600 border px-2 py-1">← Back</button>
+            <button onclick="updateChart()" class="btn-tool bg-slate-100 text-slate-600 border px-2 py-1">⟲ Top</button>
+        </div>
     </div>
+    
+    <div class="flex flex-row gap-4 h-[400px]">
+        <div style="width: 70%; position: relative;">
+            <canvas id="pieChartCanvas"></canvas>
+        </div>
+        
+        <div style="width: 30%; position: relative;" class="border-l pl-4">
+            <canvas id="stackedBarCanvas"></canvas>
+        </div>
+    </div>
+</div>
 
     <div class="grid grid-cols-12 gap-4">
         <div class="col-span-12 lg:col-span-3 bg-white rounded-2xl border p-4 shadow-sm h-fit">
@@ -274,36 +290,110 @@ if (isset($_GET['action'])) {
             if (isChartView) updateChart();
         }
 
-        function updateChart(focusPath = null) {
-            const ctx = document.getElementById('pieChartCanvas').getContext('2d');
-            if (chartInstance) chartInstance.destroy();
-            if (!fullDataCache.length) return;
+        let chartHistory = [];
+let barChartInstance = null;
 
-            const parentRow = focusPath ? fullDataCache.find(r => r.path === focusPath) : fullDataCache[0];
-            if (!parentRow) return;
+function updateChart(focusPath = null) {
+    const ctxPie = document.getElementById('pieChartCanvas').getContext('2d');
+    const ctxBar = document.getElementById('stackedBarCanvas').getContext('2d');
+    
+    if (chartInstance) chartInstance.destroy();
+    if (barChartInstance) barChartInstance.destroy();
+    if (!fullDataCache.length) return;
 
-            const parentLevel = parseInt(parentRow.path_level);
-            const children = fullDataCache.filter(r => parseInt(r.path_level) === (parentLevel + 1) && r.path.startsWith(parentRow.path));
-            
-            chartInstance = new Chart(ctx, {
-                type: 'pie',
-                data: {
-                    labels: children.map(r => r.name),
-                    datasets: [{
-                        data: children.map(r => (r.total_size / 1073741824).toFixed(3)),
-                        backgroundColor: ['#2563eb', '#7c3aed', '#db2777', '#ea580c', '#16a34a', '#0891b2', '#4f46e5', '#6366f1']
-                    }]
+    // 1. Resolve the Current Parent Row
+    const parentRow = focusPath ? fullDataCache.find(r => r.path === focusPath) : fullDataCache[0];
+    if (!parentRow) return;
+
+    const maxScanDepth = parseInt(document.getElementById('depthInput').value);
+    const currentLevel = parseInt(parentRow.path_level);
+
+    // 2. Filter Subfolders (The slices)
+    const children = fullDataCache.filter(r => 
+        parseInt(r.path_level) === (currentLevel + 1) && r.path.startsWith(parentRow.path)
+    );
+
+    // 3. Construct Data Arrays
+    let labels = children.map(r => r.name);
+    let values = children.map(r => (r.total_size / 1073741824).toFixed(3));
+    
+    // Append Loose Files from "SizeHere" column of the Parent
+    const looseFilesGB = (parentRow.here_size / 1073741824).toFixed(3);
+    if (parseFloat(looseFilesGB) > 0) {
+        labels.push("📁 (Files in this folder)");
+        values.push(looseFilesGB);
+    }
+
+    // Professional Color Palette
+    const colors = ['#2563eb', '#7c3aed', '#db2777', '#ea580c', '#16a34a', '#0891b2', '#4f46e5', '#6366f1', '#facc15', '#94a3b8'];
+
+    // 4. Render 70% Pie Chart
+    chartInstance = new Chart(ctxPie, {
+        type: 'pie',
+        data: {
+            labels: labels,
+            datasets: [{
+                data: values,
+                backgroundColor: colors,
+                hoverOffset: 20 // Slices pop out on hover
+            }]
+        },
+        options: {
+            maintainAspectRatio: false,
+            plugins: {
+                title: { 
+                    display: true, 
+                    text: `${parentRow.hd} | ${Object.values(parentRow.levels).join(' ')}`,
+                    font: { size: 13, weight: '900' }
                 },
-                options: {
-                    maintainAspectRatio: false,
-                    plugins: {
-                        title: { display: true, text: `${parentRow.hd} | ${Object.values(parentRow.levels).join(' ')}`, font: {size: 14, weight: 'bold'} },
-                        legend: { position: 'right' }
-                    },
-                    onClick: (e, el) => { if (el.length > 0) updateChart(children[el[0].index].path); }
+                legend: { position: 'bottom', labels: { boxWidth: 10, font: { size: 9 } } }
+            },
+            onClick: (e, el) => {
+                if (el.length > 0) {
+                    const index = el[0].index;
+                    // Only drill down if it's a folder (index is within 'children' array)
+                    if (index < children.length && currentLevel < maxScanDepth) {
+                        chartHistory.push(parentRow.path);
+                        updateChart(children[index].path);
+                    }
                 }
-            });
+            }
         }
+    });
+
+    // 5. Render 30% Stacked Bar (Single matched bar)
+    const barDatasets = labels.map((label, i) => ({
+        label: label,
+        data: [values[i]],
+        backgroundColor: colors[i % colors.length],
+        barThickness: 80
+    }));
+
+    barChartInstance = new Chart(ctxBar, {
+        type: 'bar',
+        data: {
+            labels: ['Folder Composition'],
+            datasets: barDatasets
+        },
+        options: {
+            indexAxis: 'x',
+            maintainAspectRatio: false,
+            scales: { 
+                x: { stacked: true, display: false }, 
+                y: { stacked: true, beginAtZero: true, title: { display: true, text: 'GB', font: {size: 10} } } 
+            },
+            plugins: { legend: { display: false } }
+        }
+    });
+}
+
+// Migration Back Up logic
+function goBackChart() {
+    if (chartHistory.length > 0) {
+        const lastPath = chartHistory.pop();
+        updateChart(lastPath);
+    }
+}
 
         function formatSize(b) { if (!b || b === 0) return '0 B'; const i = Math.floor(Math.log(b) / Math.log(1024)); return (b / Math.pow(1024, i)).toFixed(2) * 1 + ' ' + ['B', 'KB', 'MB', 'GB', 'TB'][i]; }
         function applyFilter() { renderTable(fullDataCache.filter(r => r.name.toLowerCase().includes(document.getElementById('matrixFilter').value.toLowerCase()))); }
