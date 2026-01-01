@@ -70,27 +70,45 @@ if (isset($_GET['action'])) {
         echo json_encode($res); exit;
     }
 
-    if ($action === 'scan') {
+   
+   
+   if ($action === 'scan') {
         $startTime = microtime(true);
         $path = $_GET['path'];
         $depthLimit = (int)$_GET['depthLimit'];
         $targets = [$path];
+        
         try {
-            $dir = new RecursiveDirectoryIterator($path, RecursiveDirectoryIterator::SKIP_DOTS);
+            // Disable following symlinks to prevent infinite loops
+            $dir = new RecursiveDirectoryIterator($path, 
+                RecursiveDirectoryIterator::SKIP_DOTS | 
+                RecursiveDirectoryIterator::FOLLOW_SYMLINKS === false
+            );
+            
             $filter = new RecursiveCallbackFilterIterator($dir, function ($current) {
-                return $current->getFilename()[0] !== '.'; 
+                $fn = $current->getFilename();
+                // Avoid hidden files and system-level directories that cause permission hangs
+                return $fn[0] !== '.' && !in_array($fn, ['dev', 'Volumes', 'Library', 'System']); 
             });
+
             $it = new RecursiveIteratorIterator($filter, RecursiveIteratorIterator::SELF_FIRST);
             $it->setMaxDepth($depthLimit - 1);
+
             foreach ($it as $fileinfo) {
-                if ($fileinfo->isDir() && !$fileinfo->isLink()) $targets[] = $fileinfo->getPathname();
+                if ($fileinfo->isDir() && !$fileinfo->isLink() && is_readable($fileinfo->getPathname())) {
+                    $targets[] = $fileinfo->getPathname();
+                }
+                // Stop after 1000 folders to protect memory
+                if (count($targets) > 1000) break; 
             }
         } catch (Exception $e) {}
 
         $results = [];
         foreach ($targets as $t) {
+            // Use @ to suppress permission warnings that slow down the scan
             $deep = getFolderStats($t, true);
             $local = getFolderStats($t, false);
+
             $rawParts = array_values(array_filter(explode('/', $t)));
             $levels = [];
             if (strpos($t, '/Volumes/') === 0) {
@@ -109,6 +127,7 @@ if (isset($_GET['action'])) {
         echo json_encode(['data' => $results, 'time' => round(microtime(true) - $startTime, 2)]); exit;
     }
 }
+
 ?>
 <!DOCTYPE html>
 <html>
@@ -124,12 +143,39 @@ if (isset($_GET['action'])) {
         .btn-tool { padding: 6px 12px; border-radius: 6px; font-weight: 900; font-size: 10px; text-transform: uppercase; transition: all 0.2s; }
         .branch { margin-left: 15px; border-left: 1px dashed #cbd5e1; }
         #treemapContainer { height: 300px; display: none; margin-bottom: 1rem; }
+   
+            /* Remove height restrictions to allow the whole page to expand */
+            body { 
+                height: auto !important; 
+                overflow-y: auto !important; 
+                display: block !important; /* Disables flex-col which can trap height */
+            }
+
+            /* Ensure the sticky header works with the window scrollbar */
+            th { 
+                position: sticky; 
+                top: 0; 
+                background: #f8fafc; 
+                z-index: 50; 
+                box-shadow: 0 1px 2px rgba(0,0,0,0.1); 
+            }
+
+            /* Adjust the chart container to a comfortable viewing size */
+            #treemapContainer { 
+                height: 500px; 
+                margin-bottom: 2rem; 
+            }
+   
+   
     </style>
 </head>
 
 <!-- <body class="bg-slate-50 p-4 h-screen flex flex-col"> -->
+
+<body class="bg-slate-50 p-4"> 
     
-<body class="bg-slate-50 p-4 min-h-screen">
+
+
     <div class="bg-white p-4 rounded-2xl shadow-sm border mb-4 flex flex-wrap justify-between items-center gap-4">
         <div class="flex items-center gap-4">
             <h1 class="text-xl font-black italic">AUDITOR<span class="text-blue-600">PRO v8.5</span></h1>
@@ -151,18 +197,29 @@ if (isset($_GET['action'])) {
         </div>
     </div>
 
-<div id="treemapContainer" class="bg-white rounded-2xl border p-4 shadow-inner flex justify-center">
-    <div style="width: 100px; height: 100px;">
+
+
+
+<div id="treemapContainer" class="bg-white rounded-2xl border p-4 shadow-sm" style="display: none;">
+    <!--
+<div id="treemapContainer" class="bg-white rounded-2xl border p-4 shadow-sm hidden">
+        -->
+
         <canvas id="pieChartCanvas"></canvas>
     </div>
-</div>
 
-    <div class="grid grid-cols-12 gap-4 flex-grow overflow-hidden">
-        <div class="col-span-12 lg:col-span-3 bg-white rounded-2xl border p-4 overflow-auto shadow-inner" id="treeRoot">
-            <p class="text-[10px] text-slate-400 font-bold uppercase mb-2">Drive Selection</p>
+    <div class="grid grid-cols-12 gap-4">
+        <div class="col-span-12 lg:col-span-3 bg-white rounded-2xl border p-4 shadow-sm h-fit">
+            <div id="treeRoot"></div>
         </div>
-        <div class="col-span-12 lg:col-span-9 bg-white rounded-2xl border overflow-auto shadow-inner">
-            <table class="w-full border-collapse" id="mainTable">
+        <div class="col-span-12 lg:col-span-9 bg-white rounded-2xl border shadow-sm">
+            <div class="overflow-x-auto"> <table class="w-full border-collapse" id="mainTable">
+                 
+            
+            
+            
+            
+           
                 <thead id="tableHead"><tr id="headerRow">
                     <th>SEQ</th><th>HDName</th><th>FolderName</th><th>PathLevel</th><th>FullPath</th>
                     <th class="bg-blue-50">TotalSizeGB</th><th class="bg-blue-50">FilesRecursive</th><th class="bg-blue-50">FoldersRecursive</th>
@@ -237,17 +294,26 @@ if (isset($_GET['action'])) {
             const body = document.getElementById('tableBody');
             const head = document.getElementById('headerRow');
             body.innerHTML = '';
+            
+            if(!data || data.length === 0) return;
+
             let maxLvlIndex = 0;
-            data.forEach(r => { Object.keys(r.levels).forEach(k => { if(parseInt(k) > maxLvlIndex) maxLvlIndex = parseInt(k); })});
+            data.forEach(r => { 
+                Object.keys(r.levels).forEach(k => { if(parseInt(k) > maxLvlIndex) maxLvlIndex = parseInt(k); })
+            });
+
+            // Clean up headers
             while(head.cells.length > 11) head.deleteCell(11);
             for(let i=0; i <= maxLvlIndex; i++) {
                 let th = document.createElement('th'); th.innerText = `Level${i}`; head.appendChild(th);
             }
+
+            // Correctly build rows
             data.forEach((r, idx) => {
-                let row = `<tr class="hover:bg-blue-50">
+                let rowHtml = `<tr class="hover:bg-blue-50">
                     <td class="text-slate-400 font-mono text-center">${idx + 1}</td>
                     <td class="font-bold text-slate-700">${r.hd}</td>
-                    <td class="font-bold text-blue-600">${r.name}</td>
+                    <td class="font-bold text-blue-600 cursor-pointer" onclick="updateChart('${r.path}')">${r.name}</td>
                     <td class="text-center font-bold text-slate-500">${r.path_level}</td>
                     <td class="text-[9px] font-mono text-slate-400 max-w-[100px] truncate" title="${r.path}">${r.path}</td>
                     <td class="text-right font-black bg-blue-50/30">${(r.total_size / 1073741824).toFixed(3)}</td>
@@ -256,63 +322,84 @@ if (isset($_GET['action'])) {
                     <td class="text-right text-emerald-700 bg-emerald-50/30 font-bold">${formatSize(r.here_size)}</td>
                     <td class="text-right">${r.here_files.toLocaleString()}</td>
                     <td class="text-right">${r.here_folders.toLocaleString()}</td>`;
-                for(let i=0; i <= maxLvlIndex; i++) row += `<td class="lvl-cell">${r.levels[i] || ''}</td>`;
-                body.insertAdjacentHTML('beforeend', row + '</tr>');
+
+                // Add level cells that update the chart title
+                for(let i=0; i <= maxLvlIndex; i++) {
+                    const lvlVal = r.levels[i] || '';
+                    rowHtml += `<td class="lvl-cell cursor-pointer hover:bg-blue-100" onclick="updateChart('${r.path}')">${lvlVal}</td>`;
+                }
+                body.insertAdjacentHTML('beforeend', rowHtml + '</tr>');
             });
         }
 
         function toggleView() {
-            isChartView = !isChartView;
-            document.getElementById('treemapContainer').style.display = isChartView ? 'block' : 'none';
-            document.getElementById('viewBtn').innerText = isChartView ? 'ViewMatrix' : 'ViewChart';
-            if (isChartView) updateChart();
-        }
+    isChartView = !isChartView;
+    const container = document.getElementById('treemapContainer');
+    const btn = document.getElementById('viewBtn');
+    
+    // Toggle visibility
+    container.style.display = isChartView ? 'block' : 'none';
+    
+    // Toggle button text
+    btn.innerText = isChartView ? 'Show Table' : 'View Pie Chart';
+    
+    // Trigger update if we are switching TO chart view
+    if (isChartView) {
+        updateChart();
+    }
+}
 
-function updateChart() {
-    const ctx = document.getElementById('pieChartCanvas').getContext('2d');
-    if (chartInstance) chartInstance.destroy();
+let currentParentPath = null; // Tracks which folder we are currently "viewing"
 
-    // 1. Aggregate data by path_level
-    const levelStats = fullDataCache.reduce((acc, curr) => {
-        const lvl = `Level ${curr.path_level}`;
-        if (!acc[lvl]) acc[lvl] = 0;
-        acc[lvl] += curr.total_size;
-        return acc;
-    }, {});
+function updateChart(focusPath = null) {
+            const ctx = document.getElementById('pieChartCanvas').getContext('2d');
+            if (chartInstance) chartInstance.destroy();
+            if (!fullDataCache.length) return;
 
-    const labels = Object.keys(levelStats).sort();
-    const dataValues = labels.map(l => (levelStats[l] / 1073741824).toFixed(3)); // Convert to GB
+            // 1. Find the Parent (Title Source)
+            const parentRow = focusPath 
+                ? fullDataCache.find(r => r.path === focusPath)
+                : fullDataCache[0];
 
-    // 2. Create the Pie Chart
-    chartInstance = new Chart(ctx, {
-        type: 'pie',
-        data: {
-            labels: labels,
-            datasets: [{
-                data: dataValues,
-                backgroundColor: [
-                    '#3b82f6', '#8b5cf6', '#ec4899', '#f59e0b', 
-                    '#10b981', '#64748b', '#ef4444'
-                ],
-                borderWidth: 2,
-                borderColor: '#ffffff'
-            }]
-        },
-        options: {
-            maintainAspectRatio: false,
-            plugins: {
-                legend: { position: 'bottom' },
-                tooltip: {
-                    callbacks: {
-                        label: function(item) {
-                            return ` ${item.label}: ${item.raw} GB`;
+            if (!parentRow) return;
+
+            // 2. Build Title from HD and ALL levels
+            const levelString = Object.values(parentRow.levels).join(" ");
+            const chartTitle = `${parentRow.hd} | ${levelString}`;
+
+            // 3. Find Children (Level + 1)
+            const parentLevel = parseInt(parentRow.path_level);
+            const children = fullDataCache.filter(r => {
+                return parseInt(r.path_level) === (parentLevel + 1) && r.path.startsWith(parentRow.path);
+            });
+
+            const labels = children.map(r => r.name);
+            const dataValues = children.map(r => (r.total_size / 1073741824).toFixed(3));
+
+            chartInstance = new Chart(ctx, {
+                type: 'pie',
+                data: {
+                    labels: labels,
+                    datasets: [{
+                        data: dataValues,
+                        backgroundColor: ['#2563eb', '#7c3aed', '#db2777', '#ea580c', '#16a34a', '#0891b2', '#4f46e5', '#6366f1'],
+                        borderWidth: 1
+                    }]
+                },
+                options: {
+                    maintainAspectRatio: false,
+                    plugins: {
+                        title: { display: true, text: chartTitle, font: { size: 12, weight: '900' } },
+                        legend: { position: 'right', labels: { boxWidth: 12, font: { size: 10 } } }
+                    },
+                    onClick: (event, elements) => {
+                        if (elements.length > 0) {
+                            updateChart(children[elements[0].index].path);
                         }
                     }
                 }
-            }
+            });
         }
-    });
-}
 
         function formatSize(b) { if (!b || b === 0) return '0 B'; const i = Math.floor(Math.log(b) / Math.log(1024)); return (b / Math.pow(1024, i)).toFixed(2) * 1 + ' ' + ['B', 'KB', 'MB', 'GB', 'TB'][i]; }
         function applyFilter() { renderTable(fullDataCache.filter(r => r.name.toLowerCase().includes(document.getElementById('matrixFilter').value.toLowerCase()))); }
@@ -326,6 +413,44 @@ function updateChart() {
             const url = window.URL.createObjectURL(blob);
             const a = document.createElement('a'); a.href = url; a.download = `audit_${Date.now()}.csv`; a.click();
         }
+
+
+
+
+async function runAnalysis() {
+            const checks = Array.from(document.querySelectorAll('.audit-check:checked'));
+            if (!checks.length) return alert("Select folder!");
+            const status = document.getElementById('statusBox');
+            
+            status.innerText = "Scanning..."; 
+            status.className = "px-3 py-1 bg-amber-400 text-white rounded-full text-[10px] font-black uppercase animate-pulse";
+            
+            fullDataCache = [];
+            const controller = new AbortController();
+            const timeoutId = setTimeout(() => controller.abort(), 30000); // 30 second timeout
+
+            for (const cb of checks) {
+                try {
+                    const res = await fetch(`?action=scan&path=${encodeURIComponent(cb.dataset.path)}&depthLimit=${document.getElementById('depthInput').value}`, { signal: controller.signal });
+                    const json = await res.json();
+                    fullDataCache = [...fullDataCache, ...json.data];
+                } catch(e) {
+                    console.error("Scan failed or timed out", e);
+                    status.innerText = "Error / Timeout";
+                    status.className = "px-3 py-1 bg-red-500 text-white rounded-full text-[10px]";
+                }
+            }
+            clearTimeout(timeoutId);
+            renderTable(fullDataCache);
+            if (isChartView) updateChart();
+            if (status.innerText !== "Error / Timeout") {
+                status.innerText = `Complete`;
+                status.className = "px-3 py-1 bg-green-500 text-white rounded-full text-[10px] font-black uppercase";
+            }
+        }
+
+
+
 
         window.onload = loadDrives;
     </script>
