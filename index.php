@@ -1,5 +1,6 @@
 <?php
 // 1. GLOBAL CONFIG
+set_time_limit(0); 
 ini_set('memory_limit', '1024M');
 error_reporting(0); 
 
@@ -94,12 +95,17 @@ if (isset($_GET['action'])) {
         foreach ($targets as $t) {
             $deep = getFolderStats($t, true);
             $local = getFolderStats($t, false);
-            $rawParts = array_values(array_filter(explode('/', $t)));
+            
+            // Generate breadcrumbs with trailing slash termination
+            $parts = array_values(array_filter(explode('/', $t)));
             $levels = [];
-            foreach ($rawParts as $idx => $p) { $levels[$idx] = "/$p/"; }
+            $levels[0] = "/"; 
+            foreach ($parts as $idx => $p) {
+                $levels[$idx + 1] = $p . "/";
+            }
 
             $results[] = [
-                'hd' => getHDName($t), 'path' => $t, 'path_level' => count($levels), 'name' => basename($t),
+                'hd' => getHDName($t), 'path' => $t, 'path_level' => count($levels) - 1, 'name' => basename($t),
                 'total_size' => $deep['s'], 'total_files' => $deep['f'], 'total_subs' => $deep['d'],
                 'here_size' => $local['s'], 'here_files' => $local['f'], 'here_folders' => $local['d'], 'levels' => $levels
             ];
@@ -117,8 +123,10 @@ if (isset($_GET['action'])) {
     <style>
         body { background: #f1f5f9; padding: 20px; font-family: ui-sans-serif, system-ui; }
         .folder { color: #2563eb; cursor: pointer; font-weight: 800; font-size: 11px; }
-        th { font-size: 9px; background: #f8fafc; border: 1px solid #e2e8f0; padding: 6px; position: sticky; top: 0; z-index: 50; }
+        th { font-size: 9px; background: #f8fafc; border: 1px solid #e2e8f0; padding: 6px; position: sticky; top: 0; z-index: 50; text-transform: uppercase; }
         td { font-size: 10px; border: 1px solid #f1f5f9; padding: 4px; white-space: nowrap; }
+        .lvl-cell { color: #64748b; font-family: monospace; font-size: 9px; border-left: 1px solid #e2e8f0; cursor: pointer; }
+        .lvl-cell:hover { background: #eff6ff; color: #2563eb; }
         .btn-tool { padding: 6px 12px; border-radius: 6px; font-weight: 900; font-size: 10px; text-transform: uppercase; border: 1px solid transparent; cursor: pointer; }
         .branch { margin-left: 15px; border-left: 1px dashed #cbd5e1; }
         #treemapContainer { display: none; margin-bottom: 2rem; background: white; border-radius: 1rem; padding: 20px; border: 1px solid #e2e8f0; box-shadow: 0 10px 15px -3px rgba(0,0,0,0.1); }
@@ -144,8 +152,8 @@ if (isset($_GET['action'])) {
         <div class="flex justify-between items-center mb-4 border-b pb-3">
             <div id="breadcrumb" class="text-[10px] font-black text-slate-500 truncate max-w-[70%] uppercase tracking-widest">Root</div>
             <div class="flex gap-2">
-                <button onclick="goBackChart()" class="btn-tool bg-white border border-slate-200 text-slate-600 hover:bg-slate-50">← Back</button>
-                <button onclick="updateChart(null)" class="btn-tool bg-blue-50 border border-blue-100 text-blue-600 hover:bg-blue-100">⟲ Top</button>
+                <button onclick="goBackChart()" class="btn-tool bg-white border border-slate-200 text-slate-600">← Back</button>
+                <button onclick="updateChart(null)" class="btn-tool bg-blue-50 border border-blue-100 text-blue-600">⟲ Top</button>
             </div>
         </div>
         <div class="flex flex-row gap-6 h-[420px]">
@@ -158,10 +166,11 @@ if (isset($_GET['action'])) {
         <div class="col-span-12 lg:col-span-3 bg-white rounded-2xl border p-4 shadow-sm h-fit">
             <div id="treeRoot" class="max-h-[600px] overflow-y-auto"></div>
         </div>
+
         <div class="col-span-12 lg:col-span-9 bg-white rounded-2xl border shadow-sm overflow-hidden">
             <div class="overflow-x-auto max-h-[800px] overflow-y-auto">
                 <table class="w-full border-collapse" id="mainTable">
-                    <thead><tr id="headerRow">
+                    <thead id="tableHead"><tr id="headerRow">
                         <th>#</th><th>HD</th><th>Folder</th><th>Lvl</th><th>Path</th>
                         <th class="bg-blue-50">Total GB</th><th class="bg-blue-50">Files(R)</th><th class="bg-blue-50">Dirs(R)</th>
                         <th class="bg-emerald-50 text-emerald-700">Size Here</th><th class="bg-emerald-50">Files</th><th class="bg-emerald-50">Dirs</th>
@@ -224,19 +233,35 @@ if (isset($_GET['action'])) {
 
         function renderTable(data) {
             const body = document.getElementById('tableBody');
+            const head = document.getElementById('headerRow');
             body.innerHTML = '';
+            if(!data.length) return;
+
+            // Handle Dynamic Level Columns
+            let maxLvlIndex = 0;
+            data.forEach(r => { Object.keys(r.levels).forEach(k => { if(parseInt(k) > maxLvlIndex) maxLvlIndex = parseInt(k); })});
+            while(head.cells.length > 11) head.deleteCell(11);
+            for(let i=0; i <= maxLvlIndex; i++) { 
+                let th = document.createElement('th'); 
+                th.innerText = `Lv${i}`; 
+                head.appendChild(th); 
+            }
+
             data.forEach((r, idx) => {
-                let row = `<tr>
+                let row = `<tr class="hover:bg-blue-50/50">
                     <td>${idx + 1}</td><td>${r.hd}</td>
                     <td class="font-bold text-blue-600 cursor-pointer" onclick="updateChart('${r.path}')">${r.name}</td>
-                    <td class="text-center">${r.path_level}</td>
+                    <td class="text-center font-bold text-slate-400">${r.path_level}</td>
                     <td class="text-[9px] text-slate-400 truncate max-w-[150px]">${r.path}</td>
-                    <td class="text-right font-black text-blue-700">${(r.total_size / 1073741824).toFixed(3)}</td>
+                    <td class="text-right font-black text-blue-700 bg-blue-50/30">${(r.total_size / 1073741824).toFixed(3)}</td>
                     <td class="text-right">${r.total_files}</td><td class="text-right">${r.total_subs}</td>
-                    <td class="text-right text-emerald-700 font-bold">${formatSize(r.here_size)}</td>
-                    <td class="text-right">${r.here_files}</td><td class="text-right">${r.here_folders}</td>
-                </tr>`;
-                body.insertAdjacentHTML('beforeend', row);
+                    <td class="text-right text-emerald-700 bg-emerald-50/30 font-bold">${formatSize(r.here_size)}</td>
+                    <td class="text-right">${r.here_files}</td><td class="text-right">${r.here_folders}</td>`;
+                
+                for(let i=0; i <= maxLvlIndex; i++) {
+                    row += `<td class="lvl-cell" onclick="updateChart('${r.path}')">${r.levels[i] || ''}</td>`;
+                }
+                body.insertAdjacentHTML('beforeend', row + '</tr>');
             });
         }
 
@@ -254,7 +279,7 @@ if (isset($_GET['action'])) {
             const looseGB = (parentRow.here_size / 1073741824).toFixed(3);
             if (parseFloat(looseGB) > 0) { labels.push("📁 (Loose Files)"); values.push(looseGB); }
 
-            if (!values.length) { alert("No sub-content found."); return; }
+            if (!values.length) { alert("This folder has no scanned sub-folders."); return; }
 
             if (chartInstance) chartInstance.destroy();
             if (barChartInstance) barChartInstance.destroy();
@@ -288,7 +313,7 @@ if (isset($_GET['action'])) {
         function copyForExcel() {
             let tsv = "HD\tFolder\tLevel\tPath\tTotalGB\tTotalFiles\tSizeHere\n";
             fullDataCache.forEach(r => tsv += `${r.hd}\t${r.name}\t${r.path_level}\t${r.path}\t${(r.total_size/1073741824).toFixed(3)}\t${r.total_files}\t${r.here_size}\n`);
-            navigator.clipboard.writeText(tsv).then(() => alert("Copied! Paste into Excel/Sheets."));
+            navigator.clipboard.writeText(tsv).then(() => alert("Copied! Just Paste into Excel or Sheets."));
         }
 
         function exportCSV() {
