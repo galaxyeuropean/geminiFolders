@@ -206,14 +206,14 @@ if (isset($_GET['action'])) {
     <div class="overflow-x-auto">
         <table class="w-full text-left">
             <thead>
-                <tr class="text-[10px] uppercase text-slate-400 border-b">
-                    <th class="pb-2">Drive</th>
-                    <th class="pb-2">Usage</th>
-                    <th class="pb-2">Used</th>
-                    <th class="pb-2">Available</th>
-                    <th class="pb-2">Total Capacity</th>
-                </tr>
-            </thead>
+    <tr class="text-[8px] uppercase text-slate-400 border-b tracking-widest">
+        <th class="pb-1 cursor-pointer hover:text-blue-600" onclick="sortDrives('total')">Total Size ↕</th>
+        <th class="pb-1">Scale</th>
+        <th class="pb-1 cursor-pointer hover:text-blue-600" onclick="sortDrives('name')">Drive Name ↕</th>
+        <th class="pb-1 cursor-pointer hover:text-blue-600" onclick="sortDrives('percent')">Usage ↕</th>
+        <th class="pb-1 text-right cursor-pointer hover:text-blue-600" onclick="sortDrives('free')">Available ↕</th>
+    </tr>
+</thead>
             <tbody id="driveTableBody"></tbody>
         </table>
     </div>
@@ -505,40 +505,72 @@ function exportCSV() {
 }
 
 
+let driveDataCache = []; // Global storage for drive stats
+let sortDirection = 1;   // 1 for Asc, -1 for Desc
+
 async function showDriveReport() {
     const reportDiv = document.getElementById('driveReport');
-    const tbody = document.getElementById('driveTableBody');
     reportDiv.classList.remove('hidden');
-    tbody.innerHTML = '<tr><td colspan="5" class="py-4 text-center animate-pulse">Querying Volumes...</td></tr>';
-
+    
+    // Initial Fetch
     try {
         const res = await fetch('?action=get_drives');
-        const drives = await res.json();
-        tbody.innerHTML = '';
-
-        drives.forEach(d => {
-            const barColor = d.percent > 90 ? 'bg-red-500' : d.percent > 75 ? 'bg-amber-500' : 'bg-blue-600';
-            
-            const row = `
-    <tr class="border-b last:border-0">
-        <td class="drive-cell font-black text-slate-700 text-xs italic">/${d.name}/</td>
-        <td class="drive-cell w-1/3">
-            <div class="flex items-center gap-3">
-                <div class="flex-1 h-2 bg-slate-100 rounded-full overflow-hidden border">
-                    <div class="h-full ${barColor}" style="width: ${d.percent}%"></div>
-                </div>
-                <span class="text-[9px] font-bold w-8">${d.percent}%</span>
-            </div>
-        </td>
-        <td class="drive-cell text-[10px] font-mono text-slate-500">${formatSize(d.used)}</td>
-        <td class="drive-cell text-[10px] font-mono text-emerald-600 font-bold">${formatSize(d.free)}</td>
-        <td class="drive-cell text-[10px] font-mono text-slate-400">${formatSize(d.total)}</td>
-    </tr>`;
-            tbody.insertAdjacentHTML('beforeend', row);
-        });
+        driveDataCache = await res.json();
+        renderDriveTable(driveDataCache);
     } catch (err) {
-        tbody.innerHTML = '<tr><td colspan="5" class="py-4 text-center text-red-500">Failed to load drive data.</td></tr>';
+        document.getElementById('driveTableBody').innerHTML = '<tr><td colspan="5">Error loading drives.</td></tr>';
     }
+}
+
+function sortDrives(key) {
+    sortDirection *= -1; // Toggle direction
+    driveDataCache.sort((a, b) => {
+        let valA = a[key];
+        let valB = b[key];
+        
+        // Handle string comparison for names
+        if (typeof valA === 'string') {
+            return sortDirection * valA.localeCompare(valB);
+        }
+        // Handle numeric comparison for sizes/percents
+        return sortDirection * (valA - valB);
+    });
+    renderDriveTable(driveDataCache);
+}
+
+function renderDriveTable(drives) {
+    const tbody = document.getElementById('driveTableBody');
+    const maxCapacity = Math.max(...drives.map(d => d.total));
+    tbody.innerHTML = '';
+
+    drives.forEach(d => {
+        const usageColor = d.percent > 90 ? 'bg-red-500' : d.percent > 75 ? 'bg-amber-500' : 'bg-blue-600';
+        const relativeWidth = ((d.total / maxCapacity) * 100).toFixed(1);
+
+        const row = `
+            <tr class="border-b last:border-0 hover:bg-slate-50">
+                <td class="drive-cell font-mono text-[10px] text-slate-600 font-bold">${formatSize(d.total)}</td>
+                <td class="drive-cell w-32">
+                    <div class="h-1.5 bg-slate-200 rounded-full overflow-hidden">
+                        <div class="h-full bg-slate-400" style="width: ${relativeWidth}%"></div>
+                    </div>
+                </td>
+                <td class="drive-cell font-black text-slate-800 text-[9px] italic tracking-tight">/${d.name}/</td>
+                <td class="drive-cell w-48">
+                    <div class="flex items-center gap-2">
+                        <div class="flex-1 h-2 bg-slate-100 rounded-full overflow-hidden border">
+                            <div class="h-full ${usageColor}" style="width: ${d.percent}%"></div>
+                        </div>
+                        <span class="text-[8px] font-bold text-slate-400 w-6">${Math.round(d.percent)}%</span>
+                    </div>
+                </td>
+                <td class="drive-cell text-[10px] font-mono text-emerald-600 font-bold text-right">${formatSize(d.free)} Free</td>
+            </tr>`;
+        tbody.insertAdjacentHTML('beforeend', row);
+    });
+    
+    // Maintain the squish level after sorting
+    updateDriveDensity(document.getElementById('rowSquish').value);
 }
 
 
