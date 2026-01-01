@@ -356,16 +356,89 @@ if (isset($_GET['action'])) {
         function formatSize(b) { if (!b || b === 0) return '0 B'; const i = Math.floor(Math.log(b) / Math.log(1024)); return (b / Math.pow(1024, i)).toFixed(2) * 1 + ' ' + ['B', 'KB', 'MB', 'GB', 'TB'][i]; }
 
         function copyForExcel() {
-            let tsv = "HD\tFolder\tLevel\tPath\tTotalGB\tTotalFiles\tSizeHere\n";
-            fullDataCache.forEach(r => tsv += `${r.hd}\t${r.name}\t${r.path_level}\t${r.path}\t${(r.total_size/1073741824).toFixed(3)}\t${r.total_files}\t${r.here_size}\n`);
-            navigator.clipboard.writeText(tsv).then(() => alert("Copied for Excel."));
-        }
+    if (!fullDataCache.length) return alert("No data to copy!");
 
-        function exportCSV() {
-            let csv = "HD,Name,Level,Path,TotalGB,SizeHere\n";
-            fullDataCache.forEach(r => csv += `"${r.hd}","${r.name}",${r.path_level},"${r.path}",${(r.total_size/1073741824).toFixed(3)},${r.here_size}\n`);
-            const a = document.createElement('a'); a.href = window.URL.createObjectURL(new Blob([csv], {type:'text/csv'})); a.download = `audit.csv`; a.click();
+    let maxLvlIndex = 0;
+    fullDataCache.forEach(r => {
+        Object.keys(r.levels).forEach(k => {
+            if (parseInt(k) > maxLvlIndex) maxLvlIndex = parseInt(k);
+        });
+    });
+
+    // Build Header
+    let tsv = "HD\tFolder\tLvl\tPath\tTotal GB\tFiles(R)\tDirs(R)\tSize Here\tFiles\tDirs";
+    for (let i = 0; i <= maxLvlIndex; i++) { tsv += `\tLv${i}`; }
+    tsv += "\n";
+
+    fullDataCache.forEach(r => {
+        // Apply /Value/ formatting to text columns
+        let row = [
+            `/${r.hd}/`, 
+            `/${r.name}/`, 
+            r.path_level, 
+            `/${r.path.replace(/^\/|\/$/g, '')}/`, // Ensure single wrapping /
+            (r.total_size / 1073741824).toFixed(3),
+            r.total_files, 
+            r.total_subs,
+            formatSize(r.here_size), 
+            r.here_files, 
+            r.here_folders
+        ];
+        
+        for (let i = 0; i <= maxLvlIndex; i++) {
+            let val = r.levels[i] ? r.levels[i].replace(/^\/|\/$/g, '') : '';
+            row.push(`/${val}/`);
         }
+        tsv += row.join("\t") + "\n";
+    });
+
+    navigator.clipboard.writeText(tsv).then(() => alert("Copied with /Text/ formatting."));
+}
+
+function exportCSV() {
+    if (!fullDataCache.length) return alert("No data to export!");
+
+    let maxLvlIndex = 0;
+    fullDataCache.forEach(r => {
+        Object.keys(r.levels).forEach(k => {
+            if (parseInt(k) > maxLvlIndex) maxLvlIndex = parseInt(k);
+        });
+    });
+
+    let csv = "HD,Folder,Lvl,Path,Total GB,Files_R,Dirs_R,Size_Here,Files,Dirs";
+    for (let i = 0; i <= maxLvlIndex; i++) { csv += `,Lv${i}`; }
+    csv += "\n";
+
+    fullDataCache.forEach(r => {
+        // Apply /Value/ formatting and CSV quotes
+        let row = [
+            `"/${r.hd}/"`, 
+            `"/${r.name}/"`, 
+            r.path_level, 
+            `"/${r.path.replace(/^\/|\/$/g, '')}/"`,
+            (r.total_size / 1073741824).toFixed(3),
+            r.total_files, 
+            r.total_subs,
+            `"${formatSize(r.here_size)}"`, 
+            r.here_files, 
+            r.here_folders
+        ];
+        
+        for (let i = 0; i <= maxLvlIndex; i++) {
+            let val = r.levels[i] ? r.levels[i].replace(/^\/|\/$/g, '') : '';
+            row.push(`"/${val}/"`);
+        }
+        csv += row.join(",") + "\n";
+    });
+
+    const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' });
+    const link = document.createElement("a");
+    link.href = URL.createObjectURL(blob);
+    link.setAttribute("download", `audit_export_${new Date().getTime()}.csv`);
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+}
 
         window.onload = loadDrives;
     </script>
