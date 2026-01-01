@@ -239,10 +239,25 @@ if (isset($_GET['action'])) {
         </div>
     </div>
 
+<div id="sortManager" class="bg-slate-800 p-3 rounded-2xl mb-4 hidden shadow-xl border-t-4 border-blue-500">
+    <div class="flex justify-between items-center mb-3">
+        <h3 class="text-[10px] font-black text-white uppercase tracking-widest">Multi-Level Sort Engine</h3>
+        <div class="flex gap-2">
+            <button onclick="addSortRule()" class="px-2 py-1 bg-blue-600 text-white text-[9px] font-bold rounded">+ Add Level</button>
+            <button onclick="applyMultiSort()" class="px-2 py-1 bg-emerald-500 text-white text-[9px] font-bold rounded">Apply & Save</button>
+            <button onclick="toggleSortManager()" class="px-2 py-1 bg-slate-700 text-white text-[9px] font-bold rounded">Hide</button>
+        </div>
+    </div>
+    <div id="sortRulesContainer" class="flex flex-wrap gap-2">
+        </div>
+</div>
+<button onclick="toggleSortManager()" class="btn-tool bg-slate-800 text-white border border-slate-600">⚡ Sort Engine</button>
+
     <div class="grid grid-cols-12 gap-4">
         <div class="col-span-12 lg:col-span-3 bg-white rounded-2xl border p-4 shadow-sm h-fit">
             <div id="treeRoot" class="max-h-[600px] overflow-y-auto"></div>
         </div>
+        
         <div class="col-span-12 lg:col-span-9 bg-white rounded-2xl border shadow-sm overflow-hidden">
             <div class="overflow-x-auto max-h-[800px] overflow-y-auto">
                 <table class="w-full border-collapse" id="mainTable">
@@ -583,6 +598,90 @@ function updateDriveDensity(val) {
         cell.style.paddingBottom = padding;
     });
 }
+
+
+
+
+let sortRules = JSON.parse(localStorage.getItem('auditor_sort_rules')) || [
+    { key: 'hd', dir: 1 },
+    { key: 'total_size', dir: -1 }
+];
+
+function toggleSortManager() {
+    const el = document.getElementById('sortManager');
+    el.classList.toggle('hidden');
+    renderSortRules();
+}
+
+function renderSortRules() {
+    const container = document.getElementById('sortRulesContainer');
+    container.innerHTML = '';
+    
+    const fields = {
+        'hd': 'HD', 'name': 'Folder', 'path_level': 'Level', 
+        'total_size': 'Total GB', 'here_size': 'Size Here', 
+        'total_files': 'Files(R)', 'path': 'Path'
+    };
+
+    sortRules.forEach((rule, idx) => {
+        let options = Object.entries(fields).map(([k, v]) => 
+            `<option value="${k}" ${rule.key === k ? 'selected' : ''}>${v}</option>`
+        ).join('');
+
+        container.insertAdjacentHTML('beforeend', `
+            <div class="flex items-center gap-1 bg-slate-700 p-1.5 rounded-lg border border-slate-600">
+                <span class="text-[9px] font-bold text-slate-400">#${idx+1}</span>
+                <select onchange="updateRule(${idx}, 'key', this.value)" class="bg-slate-800 text-white text-[10px] rounded border-none outline-none">
+                    ${options}
+                </select>
+                <select onchange="updateRule(${idx}, 'dir', this.value)" class="bg-slate-800 text-white text-[10px] rounded border-none outline-none">
+                    <option value="1" ${rule.dir == 1 ? 'selected' : ''}>ASC</option>
+                    <option value="-1" ${rule.dir == -1 ? 'selected' : ''}>DESC</option>
+                </select>
+                <button onclick="removeRule(${idx})" class="text-red-400 hover:text-red-200 px-1 font-bold">×</button>
+            </div>
+        `);
+    });
+}
+
+function updateRule(idx, prop, val) {
+    sortRules[idx][prop] = prop === 'dir' ? parseInt(val) : val;
+}
+
+function addSortRule() {
+    sortRules.push({ key: 'name', dir: 1 });
+    renderSortRules();
+}
+
+function removeRule(idx) {
+    sortRules.splice(idx, 1);
+    renderSortRules();
+}
+
+function applyMultiSort() {
+    // Save to LocalStorage
+    localStorage.setItem('auditor_sort_rules', JSON.stringify(sortRules));
+
+    fullDataCache.sort((a, b) => {
+        for (let rule of sortRules) {
+            let valA = a[rule.key];
+            let valB = b[rule.key];
+
+            if (valA === valB) continue; // Move to next sort level if tied
+
+            if (typeof valA === 'string') {
+                return rule.dir * valA.localeCompare(valB);
+            }
+            return rule.dir * (valA - valB);
+        }
+        return 0;
+    });
+
+    applyFilter(); // Refresh table view
+    document.getElementById('statusBox').innerText = "Sorted & Saved";
+}
+
+
 
 
         window.onload = loadDrives;
