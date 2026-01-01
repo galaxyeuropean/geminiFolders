@@ -46,59 +46,53 @@ if (isset($_GET['action'])) {
     $action = $_GET['action'];
 
    if ($action === 'get_drives') {
-        $driveList = [['name' => 'Macintosh HD', 'path' => '/']];
-        $volPath = '/Volumes';
-        if (is_dir($volPath)) {
-            $list = @scandir($volPath);
-            foreach ($list ?: [] as $v) {
-                if ($v[0] === '.' || $v === '..' || $v === 'Macintosh HD') continue;
-                $fullPath = $volPath . '/' . $v;
-                if (is_dir($fullPath)) $driveList[] = ['name' => $v, 'path' => $fullPath];
+    $drives = [];
+    $driveList = [['name' => 'Macintosh HD', 'path' => '/']];
+    
+    // Add external volumes
+    $volPath = '/Volumes';
+    if (is_dir($volPath) && is_readable($volPath)) {
+        $list = @scandir($volPath);
+        foreach ($list ?: [] as $v) {
+            // Filter out hidden files, aliases, and the boot drive if it appears twice
+            if ($v[0] === '.' || $v === '..' || $v === 'Macintosh HD') continue;
+            $fullPath = $volPath . '/' . $v;
+            if (is_dir($fullPath)) {
+                $driveList[] = ['name' => $v, 'path' => $fullPath];
             }
         }
-
-        $drives = [];
-        foreach ($driveList as $d) {
-            $total = @disk_total_space($d['path']) ?: 0;
-            $free = @disk_free_space($d['path']) ?: 0;
-            $used = $total - $free;
-            $percent = ($total > 0) ? round(($used / $total) * 100, 1) : 0;
-
-            $drives[] = [
-                'name' => $d['name'],
-                'path' => $d['path'],
-                'total' => $total,
-                'used' => $used,
-                'free' => $free,
-                'percent' => $percent
-            ];
-        }
-        echo json_encode($drives); exit;
     }
 
-    if ($action === 'browse') {
-        $p = $_GET['path']; $res = [];
-        if (is_dir($p) && is_readable($p)) {
-            $items = @scandir($p);
-            foreach ($items ?: [] as $i) {
-                if ($i[0] === '.' || $i === '..') continue;
-                $f = rtrim($p, DIRECTORY_SEPARATOR) . DIRECTORY_SEPARATOR . $i;
-                $res[] = ['name' => $i, 'path' => $f, 'is_dir' => is_dir($f)];
-            }
-        }
-        echo json_encode($res); exit;
-    }
+    foreach ($driveList as $d) {
+        $total = @disk_total_space($d['path']) ?: 0;
+        $free = @disk_free_space($d['path']) ?: 0;
+        $used = $total - $free;
+        $percent = ($total > 0) ? round(($used / $total) * 100, 1) : 0;
 
-    if ($action === 'scan') {
+        $drives[] = [
+            'name' => $d['name'],
+            'path' => $d['path'],
+            'total' => $total,
+            'used' => $used,
+            'free' => $free,
+            'percent' => $percent
+        ];
+    }
+    echo json_encode($drives); 
+    exit;
+}
+
+  if ($action === 'scan') {
         $path = $_GET['path'];
         $depthLimit = (int)$_GET['depthLimit'];
-        $targets = [$path];
+        $targets = [$path]; // Start with the root selection
         
+        // CRAWL TO FIND SUBFOLDERS BASED ON DEPTH
         try {
             $dir = new RecursiveDirectoryIterator($path, RecursiveDirectoryIterator::SKIP_DOTS | RecursiveDirectoryIterator::UNIX_PATHS);
             $filter = new RecursiveCallbackFilterIterator($dir, function ($current) {
                 $fn = $current->getFilename();
-                $blocked = ['Library', 'System', 'Volumes', 'dev', 'proc', '.Trash', 'node_modules'];
+                $blocked = ['Library', 'System', 'Volumes', 'dev', 'proc', '.Trash'];
                 return $fn[0] !== '.' && !in_array($fn, $blocked); 
             });
             $it = new RecursiveIteratorIterator($filter, RecursiveIteratorIterator::SELF_FIRST);
@@ -107,23 +101,37 @@ if (isset($_GET['action'])) {
                 if ($fileinfo->isDir() && !$fileinfo->isLink() && is_readable($fileinfo->getPathname())) {
                     $targets[] = $fileinfo->getPathname();
                 }
-                if (count($targets) > 3000) break; 
+                if (count($targets) > 5000) break; 
             }
         } catch (Exception $e) {}
 
         $results = [];
         foreach ($targets as $t) {
             if (connection_aborted()) exit;
+            
+            // GET STATS (Recursive for total, non-recursive for "here")
             $deep = getFolderStats($t, true);
             $local = getFolderStats($t, false);
+
+            // LEVEL LOGIC: Lv0 = First Directory after root
             $parts = array_values(array_filter(explode('/', $t)));
-            $levels = [0 => "/"];
-            foreach ($parts as $idx => $p) { $levels[$idx + 1] = $p . "/"; }
+            $levels = [];
+            foreach ($parts as $idx => $p) { 
+                $levels[$idx] = "/" . $p . "/"; 
+            }
 
             $results[] = [
-                'hd' => getHDName($t), 'path' => $t, 'path_level' => count($levels) - 1, 'name' => basename($t),
-                'total_size' => $deep['s'], 'total_files' => $deep['f'], 'total_subs' => $deep['d'],
-                'here_size' => $local['s'], 'here_files' => $local['f'], 'here_folders' => $local['d'], 'levels' => $levels
+                'hd' => "/" . getHDName($t) . "/",
+                'path' => "/" . trim($t, '/') . "/",
+                'path_level' => count($levels) - 1, 
+                'name' => "/" . basename($t) . "/",
+                'total_size' => $deep['s'], 
+                'total_files' => $deep['f'], 
+                'total_subs' => $deep['d'],
+                'here_size' => $local['s'], 
+                'here_files' => $local['f'], 
+                'here_folders' => $local['d'], 
+                'levels' => $levels
             ];
         }
         echo json_encode(['data' => $results]); exit;
@@ -146,6 +154,8 @@ if (isset($_GET['action'])) {
         .btn-tool { padding: 6px 12px; border-radius: 6px; font-weight: 900; font-size: 10px; text-transform: uppercase; border: 1px solid transparent; cursor: pointer; transition: all 0.1s; }
         .btn-tool:active { transform: scale(0.95); }
         .branch { margin-left: 15px; border-left: 1px dashed #cbd5e1; }
+        .drive-cell { transition: padding 0.1s ease-out; vertical-align: middle; }
+
         #treemapContainer { display: none; margin-bottom: 2rem; background: white; border-radius: 1rem; padding: 20px; border: 1px solid #e2e8f0; box-shadow: 0 10px 15px -3px rgba(0,0,0,0.1); }
         input[type="range"] { height: 6px; appearance: none; background: #cbd5e1; border-radius: 5px; }
     </style>
@@ -262,7 +272,11 @@ if (isset($_GET['action'])) {
             <div class="overflow-x-auto max-h-[800px] overflow-y-auto">
                 <table class="w-full border-collapse" id="mainTable">
                     <thead id="tableHead"><tr id="headerRow">
-                        <th>#</th><th>HD</th><th>Folder</th><th>Lvl</th><th>Path</th>
+                        <th>#</th>
+                        <th class="cursor-pointer hover:bg-blue-100" onclick="sortMainTable('scan_time')">Scan Date ↕</th>
+                        <th class="cursor-pointer hover:bg-blue-100" onclick="sortMainTable('hd')">HD ↕</th>
+
+                        <th>HD</th><th>Folder</th><th>Lvl</th><th>Path</th>
                         <th class="bg-blue-50">Total GB</th><th class="bg-blue-50">Files(R)</th><th class="bg-blue-50">Dirs(R)</th>
                         <th class="bg-emerald-50 text-emerald-700">Size Here</th><th class="bg-emerald-50">Files</th><th class="bg-emerald-50">Dirs</th>
                     </tr></thead>
@@ -277,6 +291,7 @@ if (isset($_GET['action'])) {
         let chartInstance = null, barChartInstance = null;
         let isChartView = false, chartHistory = [];
         let abortController = null;
+        let currentScanTime = ""; // Stores the timestamp for the active scan
 
         async function loadDrives() {
             const root = document.getElementById('treeRoot');
@@ -312,7 +327,12 @@ if (isset($_GET['action'])) {
         async function runAnalysis() {
             const checks = Array.from(document.querySelectorAll('.audit-check:checked'));
             if (!checks.length) return alert("Select folder!");
-            
+
+            // Capture Scan Start Time
+            const now = new Date();
+            currentScanTime = `/${now.getFullYear()}-${(now.getMonth()+1).toString().padStart(2, '0')}-${now.getDate().toString().padStart(2, '0')} ${now.getHours().toString().padStart(2, '0')}:${now.getMinutes().toString().padStart(2, '0')}:${now.getSeconds().toString().padStart(2, '0')}/`;
+
+
             // Toggle Buttons
             document.getElementById('startBtn').classList.add('hidden');
             document.getElementById('stopBtn').classList.remove('hidden');
@@ -327,15 +347,18 @@ if (isset($_GET['action'])) {
 
             fullDataCache = [];
             try {
-                for (const cb of checks) {
-                    const depth = document.getElementById('depthInput').value;
-                    const res = await fetch(`?action=scan&path=${encodeURIComponent(cb.dataset.path)}&depthLimit=${depth}`, { signal });
-                    const json = await res.json();
-                    if(json.data) fullDataCache = [...fullDataCache, ...json.data];
-                }
-                applyFilter();
-                document.getElementById('statusBox').innerText = "Done";
-            } catch (err) {
+        for (const cb of checks) {
+            const depth = document.getElementById('depthInput').value;
+            const res = await fetch(`?action=scan&path=${encodeURIComponent(cb.dataset.path)}&depthLimit=${depth}`, { signal });
+            const json = await res.json();
+            if(json.data) fullDataCache = [...fullDataCache, ...json.data];
+        }
+        
+        // This ensures your "Multi-Level Sort Engine" rules are applied immediately
+        applyMultiSort(); 
+        
+        document.getElementById('statusBox').innerText = "Done";
+    } catch (err) {
                 if (err.name === 'AbortError') {
                     document.getElementById('statusBox').innerText = "Stopped/Timeout";
                 } else {
@@ -361,34 +384,65 @@ if (isset($_GET['action'])) {
         }
 
         function renderTable(data) {
-            const body = document.getElementById('tableBody');
-            const head = document.getElementById('headerRow');
-            body.innerHTML = '';
-            if(!data.length) return;
+    const body = document.getElementById('tableBody');
+    const head = document.getElementById('headerRow');
+    body.innerHTML = '';
+    if(!data.length) return;
 
-            let maxLvlIndex = 0;
-            data.forEach(r => { Object.keys(r.levels).forEach(k => { if(parseInt(k) > maxLvlIndex) maxLvlIndex = parseInt(k); })});
-            while(head.cells.length > 11) head.deleteCell(11);
-            for(let i=0; i <= maxLvlIndex; i++) { 
-                let th = document.createElement('th'); th.innerText = `Lv${i}`; head.appendChild(th); 
-            }
+    let maxLvlIndex = 0;
+    data.forEach(r => { 
+        Object.keys(r.levels).forEach(k => { 
+            if(parseInt(k) > maxLvlIndex) maxLvlIndex = parseInt(k); 
+        })
+    });
 
-            data.forEach((r, idx) => {
-                let row = `<tr class="hover:bg-blue-50/50">
-                    <td>${idx + 1}</td><td>${r.hd}</td>
-                    <td class="font-bold text-blue-600 cursor-pointer" onclick="updateChart('${r.path}')">${r.name}</td>
-                    <td class="text-center font-bold text-slate-400">${r.path_level}</td>
-                    <td class="text-[9px] text-slate-400 truncate max-w-[150px]" onclick="navigator.clipboard.writeText('${r.path}')">${r.path}</td>
-                    <td class="text-right font-black text-blue-700 bg-blue-50/30">${(r.total_size / 1073741824).toFixed(3)}</td>
-                    <td class="text-right">${r.total_files}</td><td class="text-right">${r.total_subs}</td>
-                    <td class="text-right text-emerald-700 bg-emerald-50/30 font-bold">${formatSize(r.here_size)}</td>
-                    <td class="text-right">${r.here_files}</td><td class="text-right">${r.here_folders}</td>`;
-                for(let i=0; i <= maxLvlIndex; i++) {
-                    row += `<td class="lvl-cell" onclick="updateChart('${r.path}')">${r.levels[i] || ''}</td>`;
-                }
-                body.insertAdjacentHTML('beforeend', row + '</tr>');
-            });
+    // Reset headers starting from column index 11
+    while(head.cells.length > 11) head.deleteCell(11);
+    for(let i=0; i <= maxLvlIndex; i++) { 
+        let th = document.createElement('th'); 
+        th.innerText = `Lv${i}`; 
+        th.className = "cursor-pointer hover:bg-blue-100";
+        th.onclick = () => sortMainTable('levels', i); // Sort by specific Level
+        head.appendChild(th); 
+    }
+
+/*    data.forEach((r, idx) => {
+        let row = `<tr class="hover:bg-blue-50/50">
+            <td>${idx + 1}</td>
+            <td>${r.hd}</td>
+*/
+
+data.forEach((r, idx) => {
+        // Attach scan time to the object if it doesn't exist (for sorting support)
+        if (!r.scan_time) r.scan_time = currentScanTime;
+
+        let row = `<tr class="hover:bg-blue-50/50">
+            <td>${idx + 1}</td>
+            <td class="text-slate-500 font-mono">${r.scan_time}</td>
+            <td>${r.hd}</td>
+            <td class="font-bold text-blue-600 cursor-pointer" onclick="updateChart('${r.path}')">${r.name}</td>
+            `;
+
+
+
+            <td class="font-bold text-blue-600 cursor-pointer" onclick="updateChart('${r.path}')">${r.name}</td>
+            <td class="text-center font-bold text-slate-400">${r.path_level}</td>
+            <td class="text-[9px] text-slate-400 truncate max-w-[150px]" onclick="navigator.clipboard.writeText('${r.path}')">${r.path}</td>
+            <td class="text-right font-black text-blue-700 bg-blue-50/30">${(r.total_size / 1073741824).toFixed(3)}</td>
+            <td class="text-right">${r.total_files}</td>
+            <td class="text-right">${r.total_subs}</td>
+            <td class="text-right text-emerald-700 bg-emerald-50/30 font-bold">${formatSize(r.here_size)}</td>
+            <td class="text-right">${r.here_files}</td>
+            <td class="text-right">${r.here_folders}</td>`;
+        
+        for(let i=0; i <= maxLvlIndex; i++) {
+            // If the level exists, it already has slashes from the PHP
+            // If it doesn't exist, we show // as a placeholder
+            row += `<td class="lvl-cell" onclick="updateChart('${r.path}')">${r.levels[i] || '//'}</td>`;
         }
+        body.insertAdjacentHTML('beforeend', row + '</tr>');
+    });
+}
 
         function updateChart(focusPath = null) {
             if (!isChartView || !fullDataCache.length) return;
@@ -434,44 +488,24 @@ if (isset($_GET['action'])) {
         function applyFilter() { renderTable(fullDataCache.filter(r => r.path.toLowerCase().includes(document.getElementById('matrixFilter').value.toLowerCase()))); }
         function formatSize(b) { if (!b || b === 0) return '0 B'; const i = Math.floor(Math.log(b) / Math.log(1024)); return (b / Math.pow(1024, i)).toFixed(2) * 1 + ' ' + ['B', 'KB', 'MB', 'GB', 'TB'][i]; }
 
-        function copyForExcel() {
-    if (!fullDataCache.length) return alert("No data to copy!");
-
+function copyForExcel() {
+    if (!fullDataCache.length) return alert("No data!");
     let maxLvlIndex = 0;
-    fullDataCache.forEach(r => {
-        Object.keys(r.levels).forEach(k => {
-            if (parseInt(k) > maxLvlIndex) maxLvlIndex = parseInt(k);
-        });
-    });
+    fullDataCache.forEach(r => { Object.keys(r.levels).forEach(k => { if (parseInt(k) > maxLvlIndex) maxLvlIndex = parseInt(k); }); });
 
-    // Build Header
-    let tsv = "HD\tFolder\tLvl\tPath\tTotal GB\tFiles(R)\tDirs(R)\tSize Here\tFiles\tDirs";
+    let tsv = "ID\tScan Date\tHD\tFolder\tLvl\tPath\tTotal GB\tFiles(R)\tDirs(R)\tSize Here\tFiles\tDirs";
+    
     for (let i = 0; i <= maxLvlIndex; i++) { tsv += `\tLv${i}`; }
     tsv += "\n";
 
-    fullDataCache.forEach(r => {
-        // Apply /Value/ formatting to text columns
-        let row = [
-            `/${r.hd}/`, 
-            `/${r.name}/`, 
-            r.path_level, 
-            `/${r.path.replace(/^\/|\/$/g, '')}/`, // Ensure single wrapping /
-            (r.total_size / 1073741824).toFixed(3),
-            r.total_files, 
-            r.total_subs,
-            formatSize(r.here_size), 
-            r.here_files, 
-            r.here_folders
-        ];
-        
-        for (let i = 0; i <= maxLvlIndex; i++) {
-            let val = r.levels[i] ? r.levels[i].replace(/^\/|\/$/g, '') : '';
-            row.push(`/${val}/`);
-        }
+    
+    fullDataCache.forEach((r, idx) => {
+    let row = [ idx+1, r.scan_time, r.hd, r.name, r.path_level, r.path, ... ];
+
+        for (let i = 0; i <= maxLvlIndex; i++) { row.push(r.levels[i] || "//"); }
         tsv += row.join("\t") + "\n";
     });
-
-    navigator.clipboard.writeText(tsv).then(() => alert("Copied with /Text/ formatting."));
+    navigator.clipboard.writeText(tsv).then(() => alert("Copied for Excel."));
 }
 
 function exportCSV() {
@@ -484,13 +518,14 @@ function exportCSV() {
         });
     });
 
-    let csv = "HD,Folder,Lvl,Path,Total GB,Files_R,Dirs_R,Size_Here,Files,Dirs";
+    let csv = "ID,Scan_Date,HD,Folder,Lvl,Path,Total_GB,Files_R,Dirs_R,Size_Here,Files,Dirs";
     for (let i = 0; i <= maxLvlIndex; i++) { csv += `,Lv${i}`; }
     csv += "\n";
 
-    fullDataCache.forEach(r => {
-        // Apply /Value/ formatting and CSV quotes
-        let row = [
+    fullDataCache.forEach((r, idx) => {
+    let row = [ 
+            idx+1, 
+            `"${r.scan_time}"`,
             `"/${r.hd}/"`, 
             `"/${r.name}/"`, 
             r.path_level, 
@@ -523,7 +558,13 @@ function exportCSV() {
 let driveDataCache = []; // Global storage for drive stats
 let sortDirection = 1;   // 1 for Asc, -1 for Desc
 
-async function showDriveReport() {
+// ... setup code ...
+    const res = await fetch('?action=get_drives');
+    const raw = await res.text(); // Add this line
+    console.log("Drive Debug:", raw); // Open Inspect > Console to see this
+    
+    const drives = JSON.parse(raw);
+    
     const reportDiv = document.getElementById('driveReport');
     reportDiv.classList.remove('hidden');
     
