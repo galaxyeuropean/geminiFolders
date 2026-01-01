@@ -1,5 +1,5 @@
 <?php
-// 1. GLOBAL CONFIG & SYSTEM BYPASS
+// 1. GLOBAL CONFIG & SYSTEM BYPASS xx not working
 set_time_limit(0); 
 ini_set('memory_limit', '2048M');
 error_reporting(0); 
