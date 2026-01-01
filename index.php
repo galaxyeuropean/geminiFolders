@@ -45,16 +45,33 @@ if (isset($_GET['action'])) {
     header('Content-Type: application/json');
     $action = $_GET['action'];
 
-    if ($action === 'get_drives') {
-        $drives = [['name' => 'Macintosh HD', 'path' => '/']];
+   if ($action === 'get_drives') {
+        $driveList = [['name' => 'Macintosh HD', 'path' => '/']];
         $volPath = '/Volumes';
         if (is_dir($volPath)) {
             $list = @scandir($volPath);
             foreach ($list ?: [] as $v) {
                 if ($v[0] === '.' || $v === '..' || $v === 'Macintosh HD') continue;
                 $fullPath = $volPath . '/' . $v;
-                if (is_dir($fullPath)) $drives[] = ['name' => $v, 'path' => $fullPath];
+                if (is_dir($fullPath)) $driveList[] = ['name' => $v, 'path' => $fullPath];
             }
+        }
+
+        $drives = [];
+        foreach ($driveList as $d) {
+            $total = @disk_total_space($d['path']) ?: 0;
+            $free = @disk_free_space($d['path']) ?: 0;
+            $used = $total - $free;
+            $percent = ($total > 0) ? round(($used / $total) * 100, 1) : 0;
+
+            $drives[] = [
+                'name' => $d['name'],
+                'path' => $d['path'],
+                'total' => $total,
+                'used' => $used,
+                'free' => $free,
+                'percent' => $percent
+            ];
         }
         echo json_encode($drives); exit;
     }
@@ -152,6 +169,9 @@ if (isset($_GET['action'])) {
         </div>
 
         <div class="flex gap-2">
+
+        <button onclick="showDriveReport()" class="btn-tool bg-slate-100 border border-slate-300 text-slate-700 hover:bg-white">💾 Disk Health</button>
+
             <div id="statusBox" class="px-3 py-1.5 bg-slate-200 rounded-full text-[10px] font-black uppercase text-slate-500">Idle</div>
             <button onclick="toggleView()" id="viewBtn" class="btn-tool bg-purple-600 text-white shadow-md">Analytics</button>
             <button id="startBtn" onclick="runAnalysis()" class="btn-tool bg-blue-600 text-white shadow-md">Start Scan</button>
@@ -160,6 +180,50 @@ if (isset($_GET['action'])) {
             <button onclick="exportCSV()" class="btn-tool bg-slate-800 text-white">CSV</button>
         </div>
     </div>
+
+
+
+<div id="driveReport" class="hidden bg-white p-6 rounded-2xl border shadow-lg mb-4 animate-in fade-in duration-300">
+    <!-- 
+    <div class="flex justify-between items-center mb-4">
+        <h2 class="text-sm font-black uppercase tracking-widest text-slate-800">System Storage Overview</h2>
+        <button onclick="document.getElementById('driveReport').classList.add('hidden')" class="text-slate-400 hover:text-red-500">✕</button>
+    </div>
+    -->
+
+    <div class="flex justify-between items-center mb-4">
+    <div class="flex items-center gap-4">
+        <h2 class="text-sm font-black uppercase tracking-widest text-slate-800">System Storage Overview</h2>
+        <div class="flex items-center gap-2 border-l pl-4">
+            <span class="text-[9px] font-bold text-slate-400">SQUISH</span>
+            <input type="range" id="rowSquish" min="1/5" max="10" value="2" 
+                   oninput="updateDriveDensity(this.value)" class="w-24">
+        </div>
+    </div>
+    <button onclick="document.getElementById('driveReport').classList.add('hidden')" class="text-slate-400 hover:text-red-500">✕</button>
+</div>
+
+    <div class="overflow-x-auto">
+        <table class="w-full text-left">
+            <thead>
+                <tr class="text-[10px] uppercase text-slate-400 border-b">
+                    <th class="pb-2">Drive</th>
+                    <th class="pb-2">Usage</th>
+                    <th class="pb-2">Used</th>
+                    <th class="pb-2">Available</th>
+                    <th class="pb-2">Total Capacity</th>
+                </tr>
+            </thead>
+            <tbody id="driveTableBody"></tbody>
+        </table>
+    </div>
+</div>
+
+
+
+
+
+
 
     <div id="treemapContainer">
         <div class="flex justify-between items-center mb-4 border-b pb-3">
@@ -439,6 +503,55 @@ function exportCSV() {
     link.click();
     document.body.removeChild(link);
 }
+
+
+async function showDriveReport() {
+    const reportDiv = document.getElementById('driveReport');
+    const tbody = document.getElementById('driveTableBody');
+    reportDiv.classList.remove('hidden');
+    tbody.innerHTML = '<tr><td colspan="5" class="py-4 text-center animate-pulse">Querying Volumes...</td></tr>';
+
+    try {
+        const res = await fetch('?action=get_drives');
+        const drives = await res.json();
+        tbody.innerHTML = '';
+
+        drives.forEach(d => {
+            const barColor = d.percent > 90 ? 'bg-red-500' : d.percent > 75 ? 'bg-amber-500' : 'bg-blue-600';
+            
+            const row = `
+    <tr class="border-b last:border-0">
+        <td class="drive-cell font-black text-slate-700 text-xs italic">/${d.name}/</td>
+        <td class="drive-cell w-1/3">
+            <div class="flex items-center gap-3">
+                <div class="flex-1 h-2 bg-slate-100 rounded-full overflow-hidden border">
+                    <div class="h-full ${barColor}" style="width: ${d.percent}%"></div>
+                </div>
+                <span class="text-[9px] font-bold w-8">${d.percent}%</span>
+            </div>
+        </td>
+        <td class="drive-cell text-[10px] font-mono text-slate-500">${formatSize(d.used)}</td>
+        <td class="drive-cell text-[10px] font-mono text-emerald-600 font-bold">${formatSize(d.free)}</td>
+        <td class="drive-cell text-[10px] font-mono text-slate-400">${formatSize(d.total)}</td>
+    </tr>`;
+            tbody.insertAdjacentHTML('beforeend', row);
+        });
+    } catch (err) {
+        tbody.innerHTML = '<tr><td colspan="5" class="py-4 text-center text-red-500">Failed to load drive data.</td></tr>';
+    }
+}
+
+
+function updateDriveDensity(val) {
+    // val is 1 to 10. We map this to padding in pixels.
+    const padding = val + "px";
+    const cells = document.querySelectorAll('.drive-cell');
+    cells.forEach(cell => {
+        cell.style.paddingTop = padding;
+        cell.style.paddingBottom = padding;
+    });
+}
+
 
         window.onload = loadDrives;
     </script>
